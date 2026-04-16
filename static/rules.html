@@ -1,0 +1,877 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>规则管理器 — Hcollector 性能分析</title>
+<style>
+:root {
+  --bg: #0f1117; --surface: #1a1d27; --surface2: #222536; --surface3: #2a2f47;
+  --border: #2e3348; --text: #e2e8f0; --muted: #8892a4; --muted2: #555e77;
+  --accent: #6366f1; --accent2: #22d3ee;
+  --red: #ef4444; --orange: #f97316; --yellow: #eab308; --green: #22c55e;
+  --panel: 420px; --radius: 10px;
+}
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body { background: var(--bg); color: var(--text); font-family: 'Segoe UI', system-ui, sans-serif;
+       font-size: 14px; height: 100vh; display: flex; flex-direction: column; overflow: hidden; }
+
+/* 顶栏 */
+header {
+  background: var(--surface); border-bottom: 1px solid var(--border);
+  padding: 0 24px; height: 52px; display: flex; align-items: center; gap: 16px;
+  flex-shrink: 0; z-index: 10;
+}
+.back-link { color: var(--muted); text-decoration: none; font-size: 13px;
+             display: flex; align-items: center; gap: 6px; transition: color .15s; }
+.back-link:hover { color: var(--text); }
+header h1 { font-size: 15px; font-weight: 600; }
+.header-sep { flex: 1; }
+.header-actions { display: flex; gap: 8px; align-items: center; }
+.badge-count { background: var(--surface3); color: var(--muted); font-size: 11px;
+               padding: 2px 8px; border-radius: 10px; }
+
+/* 버튼 */
+.btn { border: none; padding: 8px 16px; border-radius: 7px; cursor: pointer;
+       font-size: 13px; font-weight: 500; transition: opacity .15s; display: inline-flex;
+       align-items: center; gap: 6px; }
+.btn:hover { opacity: .85; }
+.btn-primary { background: var(--accent); color: #fff; }
+.btn-success { background: var(--green); color: #fff; }
+.btn-ghost { background: transparent; border: 1px solid var(--border); color: var(--text); }
+.btn-danger { background: rgba(239,68,68,.12); color: #fca5a5; border: 1px solid rgba(239,68,68,.25); }
+.btn-sm { padding: 5px 10px; font-size: 12px; }
+.btn-icon { padding: 6px; width: 30px; height: 30px; justify-content: center; }
+
+/* 主体布局 */
+.main { display: flex; flex: 1; overflow: hidden; }
+
+/* 左侧规则列表 */
+.list-panel {
+  flex: 1; overflow-y: auto; padding: 20px 24px;
+  transition: margin-right .25s;
+}
+.list-panel.with-editor { margin-right: var(--panel); }
+
+.toolbar-row { display: flex; align-items: center; gap: 10px; margin-bottom: 16px; }
+.toolbar-row .label { font-size: 13px; color: var(--muted); }
+
+/* 规则卡片 */
+.rule-card {
+  background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius);
+  margin-bottom: 8px; transition: border-color .15s, box-shadow .15s;
+  border-left: 3px solid transparent;
+}
+.rule-card:hover { border-color: var(--surface3); box-shadow: 0 2px 12px rgba(0,0,0,.3); }
+.rule-card.sev-high  { border-left-color: var(--red); }
+.rule-card.sev-medium { border-left-color: var(--orange); }
+.rule-card.sev-low   { border-left-color: var(--yellow); }
+.rule-card.disabled  { opacity: .45; }
+.rule-card.editing   { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); }
+
+.card-inner { padding: 14px 16px; display: flex; align-items: center; gap: 12px; }
+.drag-handle { color: var(--muted2); cursor: grab; font-size: 16px; line-height: 1; flex-shrink: 0; }
+.drag-handle:active { cursor: grabbing; }
+
+.toggle { position: relative; width: 34px; height: 18px; flex-shrink: 0; }
+.toggle input { opacity: 0; width: 0; height: 0; }
+.toggle-track { position: absolute; inset: 0; background: var(--surface3);
+                border-radius: 9px; cursor: pointer; transition: background .2s; }
+.toggle input:checked + .toggle-track { background: var(--accent); }
+.toggle-track::after { content: ''; position: absolute; left: 2px; top: 2px;
+                        width: 14px; height: 14px; background: #fff; border-radius: 50%;
+                        transition: transform .2s; }
+.toggle input:checked + .toggle-track::after { transform: translateX(16px); }
+
+.sev-dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
+.sev-dot.high { background: var(--red); }
+.sev-dot.medium { background: var(--orange); }
+.sev-dot.low { background: var(--yellow); }
+
+.card-info { flex: 1; min-width: 0; }
+.card-title { font-size: 13px; font-weight: 600; white-space: nowrap;
+              overflow: hidden; text-overflow: ellipsis; }
+.card-meta { display: flex; align-items: center; gap: 8px; margin-top: 4px; flex-wrap: wrap; }
+.meta-tag { font-size: 11px; color: var(--muted); background: var(--surface2);
+            padding: 1px 7px; border-radius: 4px; }
+.cond-preview { font-size: 11px; color: var(--accent2); font-family: monospace; }
+
+.card-actions { display: flex; gap: 4px; flex-shrink: 0; }
+
+/* 右侧编辑面板 */
+.editor-panel {
+  width: var(--panel); flex-shrink: 0; background: var(--surface);
+  border-left: 1px solid var(--border); position: fixed; right: 0; top: 52px;
+  bottom: 0; overflow-y: auto; display: flex; flex-direction: column;
+  transform: translateX(100%); transition: transform .25s ease;
+  z-index: 20;
+}
+.editor-panel.open { transform: translateX(0); }
+
+.ep-header { padding: 16px 20px; border-bottom: 1px solid var(--border);
+             display: flex; align-items: center; gap: 10px; flex-shrink: 0; }
+.ep-title { font-size: 14px; font-weight: 600; flex: 1; }
+
+.ep-body { flex: 1; overflow-y: auto; padding: 20px; }
+.ep-footer { padding: 14px 20px; border-top: 1px solid var(--border);
+             display: flex; gap: 8px; justify-content: flex-end; flex-shrink: 0; }
+
+/* 表单 */
+.field { margin-bottom: 16px; }
+.field label { display: block; font-size: 11px; font-weight: 500; color: var(--muted);
+               text-transform: uppercase; letter-spacing: .05em; margin-bottom: 6px; }
+.field input, .field select, .field textarea {
+  width: 100%; background: var(--surface2); border: 1px solid var(--border);
+  color: var(--text); padding: 8px 10px; border-radius: 7px; font-size: 13px;
+  outline: none; transition: border-color .15s;
+}
+.field input:focus, .field select:focus, .field textarea:focus { border-color: var(--accent); }
+.field textarea { resize: vertical; min-height: 72px; font-family: inherit; }
+.field select option { background: var(--surface2); }
+
+.field-row { display: flex; gap: 10px; }
+.field-row .field { flex: 1; }
+
+.section-title { font-size: 11px; font-weight: 600; color: var(--muted); text-transform: uppercase;
+                 letter-spacing: .06em; margin: 20px 0 12px; padding-bottom: 6px;
+                 border-bottom: 1px solid var(--border); }
+.section-title:first-child { margin-top: 0; }
+
+/* 严重度单选 */
+.sev-radios { display: flex; gap: 8px; }
+.sev-radio { flex: 1; }
+.sev-radio input { display: none; }
+.sev-radio label { display: block; text-align: center; padding: 7px; border-radius: 7px;
+                   border: 1px solid var(--border); cursor: pointer; font-size: 12px;
+                   font-weight: 500; transition: all .15s; }
+.sev-radio input:checked + label { border-color: transparent; }
+.sev-radio.high input:checked + label   { background: rgba(239,68,68,.15); color: #fca5a5; border-color: rgba(239,68,68,.4); }
+.sev-radio.medium input:checked + label { background: rgba(249,115,22,.15); color: #fdba74; border-color: rgba(249,115,22,.4); }
+.sev-radio.low input:checked + label    { background: rgba(234,179,8,.15); color: #fde047; border-color: rgba(234,179,8,.4); }
+
+/* 条件类型标签 */
+.cond-tabs { display: flex; gap: 4px; margin-bottom: 12px; }
+.cond-tab { flex: 1; padding: 6px; text-align: center; font-size: 12px; border-radius: 6px;
+            border: 1px solid var(--border); cursor: pointer; color: var(--muted);
+            background: transparent; transition: all .15s; }
+.cond-tab.active { background: var(--accent); color: #fff; border-color: var(--accent); }
+
+/* 建议列表 */
+.sugg-list { display: flex; flex-direction: column; gap: 6px; }
+.sugg-item { display: flex; gap: 6px; align-items: flex-start; }
+.sugg-item textarea { flex: 1; min-height: 52px; font-size: 12px; }
+.sugg-item .btn-icon { margin-top: 2px; flex-shrink: 0; }
+.add-sugg-btn { width: 100%; margin-top: 6px; border: 1px dashed var(--border);
+                background: transparent; color: var(--muted); border-radius: 7px;
+                padding: 7px; cursor: pointer; font-size: 12px; transition: all .15s; }
+.add-sugg-btn:hover { border-color: var(--accent); color: var(--accent); }
+
+/* 空状态 */
+.empty { text-align: center; padding: 60px 20px; color: var(--muted); }
+.empty .icon { font-size: 40px; margin-bottom: 12px; }
+
+/* 保存提示 */
+.save-toast { position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%) translateY(60px);
+              background: var(--green); color: #fff; padding: 10px 20px; border-radius: 8px;
+              font-size: 13px; font-weight: 500; transition: transform .3s; z-index: 100; }
+.save-toast.show { transform: translateX(-50%) translateY(0); }
+
+/* 排序拖拽 */
+.rule-card.drag-over { border-color: var(--accent); background: rgba(99,102,241,.05); }
+
+/* 条件区块 */
+.cond-block { background: var(--surface2); border: 1px solid var(--border);
+              border-radius: 8px; padding: 14px; margin-top: 8px; }
+.cond-block .field:last-child { margin-bottom: 0; }
+
+/* 弹窗 */
+.modal-overlay { display:none;position:fixed;inset:0;background:rgba(0,0,0,.65);z-index:200;
+                 align-items:center;justify-content:center; }
+.modal-overlay.open { display:flex; }
+.modal-card { background:var(--surface);border:1px solid var(--border);border-radius:12px;
+              padding:24px 28px;width:380px;max-width:94vw; }
+.modal-card h2 { font-size:15px;font-weight:600;margin-bottom:18px; }
+.modal-err { color:var(--red);font-size:12px;margin-top:6px;min-height:16px; }
+.modal-footer { display:flex;gap:8px;justify-content:flex-end;margin-top:20px; }
+.lock-badge { font-size:11px;padding:2px 8px;border-radius:10px;
+              background:rgba(99,102,241,.15);color:var(--accent);border:1px solid rgba(99,102,241,.3); }
+</style>
+</head>
+<body>
+
+<header>
+  <a class="back-link" href="/">
+    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M19 12H5M12 5l-7 7 7 7"/></svg>
+    返回分析
+  </a>
+  <div style="width:1px;height:20px;background:var(--border)"></div>
+  <h1>规则管理器</h1>
+  <select id="ruleset-select" onchange="switchRuleset(this.value)"
+    style="background:var(--surface2);border:1px solid var(--border);color:var(--text);padding:4px 10px;border-radius:6px;font-size:13px;cursor:pointer;outline:none;max-width:180px">
+    <option value="默认">默认规则</option>
+  </select>
+  <button class="btn btn-danger btn-sm" id="delete-set-btn" onclick="deleteCurrentSet()" style="display:none">删除此规则集</button>
+  <span class="lock-badge" id="lock-badge" style="display:none"></span>
+  <span class="badge-count" id="rule-count">0 条规则</span>
+  <div class="header-sep"></div>
+  <div class="header-actions">
+    <button class="btn btn-ghost btn-sm" onclick="showCreateModal()">＋ 新建规则集</button>
+    <button class="btn btn-ghost btn-sm" onclick="importRules()">导入规则集</button>
+    <button class="btn btn-ghost btn-sm" onclick="exportRules()">导出</button>
+    <button class="btn btn-ghost btn-sm" onclick="resetToDefaults()">恢复默认</button>
+    <button class="btn btn-primary btn-sm" onclick="requireUnlock(()=>openEditor(null))">＋ 新增规则</button>
+    <button class="btn btn-success btn-sm" onclick="saveAll()" id="save-btn">保存</button>
+  </div>
+</header>
+
+<div class="main">
+  <div class="list-panel" id="list-panel">
+    <div class="toolbar-row">
+      <span class="label">拖拽卡片可调整规则执行顺序 · 切换开关可启用/停用规则</span>
+    </div>
+    <div id="rule-list"></div>
+  </div>
+
+  <!-- 编辑面板 -->
+  <div class="editor-panel" id="editor-panel">
+    <div class="ep-header">
+      <span class="ep-title" id="ep-title">编辑规则</span>
+      <button class="btn btn-ghost btn-sm" onclick="closeEditor()">✕</button>
+    </div>
+    <div class="ep-body" id="ep-body"></div>
+    <div class="ep-footer">
+      <button class="btn btn-ghost" onclick="closeEditor()">取消</button>
+      <button class="btn btn-primary" onclick="applyEdit()">保存规则</button>
+    </div>
+  </div>
+</div>
+
+<div class="save-toast" id="save-toast">已保存</div>
+
+<!-- 通用弹窗 -->
+<div class="modal-overlay" id="modal-overlay">
+  <div class="modal-card">
+    <h2 id="modal-title"></h2>
+    <div id="modal-body"></div>
+    <p class="modal-err" id="modal-err"></p>
+    <div class="modal-footer">
+      <button class="btn btn-ghost" onclick="closeModal()">取消</button>
+      <button class="btn btn-primary" id="modal-confirm-btn">确认</button>
+    </div>
+  </div>
+</div>
+
+<script>
+// ── 数据 ────────────────────────────────────────────────────────────────────
+let rules = [];
+let editingId = null;
+let dragSrcIdx = null;
+let currentSetName = '默认';
+let rulesetMeta = {};        // {name: {has_password}}
+let sessionPasswords = {};   // {name: password} 本次会话已解锁的规则集
+
+const METRICS = [
+  { key: 'avg_backend_bound',  label: 'Backend Bound (%)',     hint: '> 40 为偏高' },
+  { key: 'avg_frontend_bound', label: 'Frontend Bound (%)',    hint: '> 20 为偏高' },
+  { key: 'avg_retire',         label: 'Retire (%)',            hint: '' },
+  { key: 'avg_bad_spec',       label: 'Bad Speculation (%)',   hint: '' },
+  { key: 'avg_l3_miss',        label: 'L3 缓存缺失率均值 (%)',    hint: '> 50 为异常' },
+  { key: 'max_l3_miss',        label: 'L3 缓存缺失率最大值 (%)', hint: '> 50 为异常' },
+  { key: 'avg_l2_pf_miss',     label: 'L2 预取缺失率均值 (%)',    hint: '> 60 为偏高' },
+  { key: 'max_l2_pf_miss',     label: 'L2 预取缺失率最大值 (%)', hint: '> 60 为偏高' },
+  { key: 'avg_l1d_miss',       label: 'L1D 缺失率均值 (%)',       hint: '' },
+  { key: 'max_l1d_miss',       label: 'L1D 缺失率最大值 (%)',     hint: '' },
+  { key: 'avg_l2d_miss',       label: 'L2D 缺失率均值 (%)',       hint: '' },
+  { key: 'max_l2d_miss',       label: 'L2D 缺失率最大值 (%)',     hint: '' },
+  { key: 'avg_ipc',            label: 'IPC 均值',               hint: '< 1.0 为偏低' },
+  { key: 'max_ipc',            label: 'IPC 最大值',             hint: '运行期间最高 IPC' },
+  { key: 'min_ipc',            label: 'IPC 最小值',             hint: '< 0.5 说明存在严重瓶颈' },
+  { key: 'avg_freq_ghz',       label: 'CPU 频率均值 (GHz)',     hint: '< 1.5 可能降频' },
+  { key: 'max_freq_ghz',       label: 'CPU 频率最大值 (GHz)',   hint: '运行期间频率峰值' },
+  { key: 'min_freq_ghz',       label: 'CPU 频率最小值 (GHz)',   hint: '< 1.5 存在降频' },
+  { key: 'avg_bzy_mhz',        label: 'Bzy_MHz 均值 (turbostat)', hint: '< 1500 可能降频' },
+  { key: 'max_bzy_mhz',        label: 'Bzy_MHz 最大值 (turbostat)', hint: '运行期间 Bzy_MHz 峰值' },
+  { key: 'avg_sse_ratio',      label: 'SSE 占比 (%)',          hint: '> 30 表示使用 SSE' },
+  { key: 'avg_branch_miss',    label: '分支预测失败率 (%)',    hint: '> 3 为偏高' },
+  { key: 'avg_rma_ratio',      label: 'NUMA RMA 比均值 (0~1)', hint: '> 0.15 为严重' },
+  { key: 'max_rma_ratio',      label: 'NUMA RMA 比最大值 (0~1)', hint: '最高 RMA 比进程，> 0.3 为严重' },
+  { key: 'total_die_mig',      label: 'Die 迁移次数',          hint: '> 0 需关注' },
+  { key: 'total_cpu_mig',      label: 'CPU 迁移次数',          hint: '' },
+  { key: 'avg_active_pct',     label: 'CPU 活跃率均值 (%)',    hint: '' },
+  { key: 'max_active_pct',     label: 'CPU 活跃率最大值 (%)',  hint: '运行期间 CPU 利用率峰值' },
+  { key: 'avg_usr_pct',        label: 'CPU 用户态利用率 (%)',  hint: '' },
+  { key: 'avg_sys_pct',        label: 'CPU 系统态利用率 (%)',  hint: '> 10 需关注内核开销' },
+  { key: 'max_sys_bw',         label: '系统总带宽峰值 (GB/s)', hint: 'SYS TOTAL_BW 最大值，单位 GB/s' },
+  { key: 'die0_max_bw',        label: 'DIE0 带宽峰值 (GB/s)',  hint: 'DIE0 TOTAL_BW 各快照最大值' },
+  { key: 'die1_max_bw',        label: 'DIE1 带宽峰值 (GB/s)',  hint: 'DIE1 TOTAL_BW 各快照最大值' },
+  { key: 'die2_max_bw',        label: 'DIE2 带宽峰值 (GB/s)',  hint: 'DIE2 TOTAL_BW 各快照最大值' },
+  { key: 'die3_max_bw',        label: 'DIE3 带宽峰值 (GB/s)',  hint: 'DIE3 TOTAL_BW 各快照最大值' },
+  { key: 'die4_max_bw',        label: 'DIE4 带宽峰值 (GB/s)',  hint: 'DIE4 TOTAL_BW 各快照最大值' },
+  { key: 'die5_max_bw',        label: 'DIE5 带宽峰值 (GB/s)',  hint: 'DIE5 TOTAL_BW 各快照最大值' },
+  { key: 'die6_max_bw',        label: 'DIE6 带宽峰值 (GB/s)',  hint: 'DIE6 TOTAL_BW 各快照最大值' },
+  { key: 'die7_max_bw',        label: 'DIE7 带宽峰值 (GB/s)',  hint: 'DIE7 TOTAL_BW 各快照最大值' },
+  { key: 'skt0_max_di_bw',    label: 'Socket0 DIE 间带宽峰值 (MB/s)', hint: 'Socket0 内 DIE-to-DIE DIEIN 矩阵最大值' },
+  { key: 'skt1_max_di_bw',    label: 'Socket1 DIE 间带宽峰值 (MB/s)', hint: 'Socket1 内 DIE-to-DIE DIEIN 矩阵最大值' },
+  { key: 'max_di_bw',         label: '全局 DIE 间带宽峰值 (MB/s)',     hint: '所有 Socket DIE-to-DIE 带宽最大值' },
+];
+
+const LOG_FILES = [
+  'hpt-hotspot.log', 'hpt-uarch.log', 'hpt-topdown.log', 'hpt-cm.log',
+  'hpt-mem.log', 'hpt-sched.log', 'mpstat.log', 'version.log',
+  'hpt-hotspot-flame.svg',
+];
+
+const SEV_LABEL = { high: '严重', medium: '中等', low: '提示' };
+const OP_LABEL  = { '>': '>', '<': '<', '>=': '≥', '<=': '≤', '==': '=' };
+
+// ── 加载 ────────────────────────────────────────────────────────────────────
+function loadRulesets() {
+  fetch('/api/rulesets').then(r => r.json()).then(list => {
+    rulesetMeta = {};
+    list.forEach(m => { rulesetMeta[m.name] = m; });
+    const sel = document.getElementById('ruleset-select');
+    sel.innerHTML = list.map(m =>
+      `<option value="${m.name}" ${m.name === currentSetName ? 'selected' : ''}>${m.name === '默认' ? '默认规则' : m.name}${m.has_password ? ' 🔒' : ''}</option>`
+    ).join('');
+    updateHeaderBadges();
+  });
+}
+
+function updateHeaderBadges() {
+  // 删除按钮：非默认才显示
+  document.getElementById('delete-set-btn').style.display = currentSetName === '默认' ? 'none' : '';
+  // 锁徽章
+  const badge = document.getElementById('lock-badge');
+  const meta = rulesetMeta[currentSetName];
+  if (meta && meta.has_password) {
+    const unlocked = currentSetName in sessionPasswords;
+    badge.style.display = '';
+    badge.textContent = unlocked ? '🔓 已解锁' : '🔒 已加密';
+    badge.style.color = unlocked ? 'var(--green)' : 'var(--accent)';
+  } else {
+    badge.style.display = 'none';
+  }
+}
+
+function isLocked() {
+  const meta = rulesetMeta[currentSetName];
+  return meta && meta.has_password && !(currentSetName in sessionPasswords);
+}
+
+function switchRuleset(name) {
+  currentSetName = name;
+  fetch(`/api/rules?name=${encodeURIComponent(name)}`).then(r => r.json()).then(data => {
+    rules = data;
+    closeEditor();
+    renderList();
+    updateHeaderBadges();
+  });
+}
+
+function deleteCurrentSet() {
+  if (currentSetName === '默认') return;
+  const nameToDelete = currentSetName;
+  const doDelete = (pwd) => {
+    const url = `/api/rulesets/${encodeURIComponent(nameToDelete)}` + (pwd ? `?password=${encodeURIComponent(pwd)}` : '');
+    fetch(url, { method: 'DELETE' }).then(r => {
+      if (!r.ok) return r.json().then(d => { throw new Error(d.detail || '删除失败'); });
+      return r.json();
+    }).then(() => {
+      delete sessionPasswords[nameToDelete];
+      currentSetName = '默认';
+      loadRulesets();
+      switchRuleset('默认');
+      showToast(`已删除规则集「${nameToDelete}」`);
+    }).catch(e => showToast(e.message));
+  };
+  if (rulesetMeta[nameToDelete]?.has_password && !(nameToDelete in sessionPasswords)) {
+    showPasswordModal(`删除规则集「${nameToDelete}」`, pwd => doDelete(pwd));
+  } else {
+    if (!confirm(`确认删除规则集「${nameToDelete}」？`)) return;
+    doDelete(sessionPasswords[nameToDelete] || '');
+  }
+}
+
+// ── 弹窗 ────────────────────────────────────────────────────────────────────
+let _modalConfirmFn = null;
+
+function openModal(title, bodyHtml, confirmFn) {
+  document.getElementById('modal-title').textContent = title;
+  document.getElementById('modal-body').innerHTML = bodyHtml;
+  document.getElementById('modal-err').textContent = '';
+  document.getElementById('modal-confirm-btn').onclick = confirmFn;
+  document.getElementById('modal-overlay').classList.add('open');
+}
+
+function closeModal() {
+  document.getElementById('modal-overlay').classList.remove('open');
+}
+
+function showCreateModal() {
+  openModal('新建规则集',
+    `<div class="field"><label>规则集名称</label>
+     <input type="text" id="new-set-name" placeholder="如：生产环境规则" autofocus></div>
+     <div class="field"><label>密码（可留空，留空则无需密码）</label>
+     <input type="password" id="new-set-pwd" placeholder="设置访问密码"></div>`,
+    () => {
+      const name = document.getElementById('new-set-name').value.trim();
+      const pwd = document.getElementById('new-set-pwd').value;
+      const errEl = document.getElementById('modal-err');
+      if (!name) { errEl.textContent = '请输入名称'; return; }
+      fetch('/api/rulesets', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name, password: pwd })
+      }).then(r => {
+        if (!r.ok) return r.json().then(d => { throw new Error(d.detail); });
+        return r.json();
+      }).then(() => {
+        if (pwd) sessionPasswords[name] = pwd;
+        closeModal();
+        loadRulesets();
+        switchRuleset(name);
+        showToast(`规则集「${name}」已创建`);
+      }).catch(e => { document.getElementById('modal-err').textContent = e.message; });
+    }
+  );
+  setTimeout(() => document.getElementById('new-set-name')?.focus(), 50);
+}
+
+function showPasswordModal(hint, onSuccess) {
+  openModal('输入密码',
+    `<div style="color:var(--muted);font-size:13px;margin-bottom:12px">${hint}</div>
+     <div class="field"><label>密码</label>
+     <input type="password" id="unlock-pwd" placeholder="请输入密码" autofocus></div>`,
+    () => {
+      const pwd = document.getElementById('unlock-pwd').value;
+      const errEl = document.getElementById('modal-err');
+      fetch(`/api/rulesets/${encodeURIComponent(currentSetName)}/verify`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ password: pwd })
+      }).then(r => {
+        if (!r.ok) return r.json().then(d => { throw new Error(d.detail || '密码错误'); });
+        return r.json();
+      }).then(() => {
+        sessionPasswords[currentSetName] = pwd;
+        closeModal();
+        updateHeaderBadges();
+        renderList();
+        onSuccess(pwd);
+      }).catch(e => { errEl.textContent = e.message; });
+    }
+  );
+  setTimeout(() => document.getElementById('unlock-pwd')?.focus(), 50);
+}
+
+function requireUnlock(callback) {
+  if (!isLocked()) { callback(); return; }
+  showPasswordModal(`规则集「${currentSetName}」已加密，请先解锁`, () => callback());
+}
+
+loadRulesets();
+fetch('/api/rules').then(r => r.json()).then(data => {
+  rules = data;
+  renderList();
+});
+
+// ── 渲染规则列表 ─────────────────────────────────────────────────────────────
+function renderList() {
+  const el = document.getElementById('rule-list');
+  document.getElementById('rule-count').textContent = `${rules.length} 条规则`;
+
+  if (!rules.length) {
+    el.innerHTML = `<div class="empty"><div class="icon">📋</div><div>暂无规则，点击「新增规则」添加</div></div>`;
+    return;
+  }
+
+  el.innerHTML = rules.map((r, i) => {
+    const cond = r.condition || {};
+    const condText = condPreview(cond);
+    const isEditing = r.id === editingId;
+    return `
+    <div class="rule-card sev-${r.severity} ${r.enabled ? '' : 'disabled'} ${isEditing ? 'editing' : ''}"
+         draggable="true" data-idx="${i}"
+         ondragstart="onDragStart(event,${i})" ondragover="onDragOver(event,${i})"
+         ondrop="onDrop(event,${i})" ondragleave="onDragLeave(event)">
+      <div class="card-inner">
+        <span class="drag-handle" title="拖拽排序">⠿</span>
+        <label class="toggle" title="${r.enabled ? '点击停用' : '点击启用'}">
+          <input type="checkbox" ${r.enabled ? 'checked' : ''} onchange="toggleRule('${r.id}',this.checked)">
+          <span class="toggle-track"></span>
+        </label>
+        <span class="sev-dot ${r.severity}"></span>
+        <div class="card-info">
+          <div class="card-title">${escHtml(r.title.replace('{value}','…'))}</div>
+          <div class="card-meta">
+            <span class="meta-tag">${escHtml(r.category || '未分类')}</span>
+            <span class="meta-tag">${SEV_LABEL[r.severity] || r.severity}</span>
+            <span class="cond-preview">${escHtml(condText)}</span>
+            ${r.suggestions?.length ? `<span class="meta-tag">${r.suggestions.length} 条建议</span>` : ''}
+          </div>
+        </div>
+        <div class="card-actions">
+          ${isLocked()
+            ? `<button class="btn btn-ghost btn-icon btn-sm" title="解锁后可编辑" onclick="requireUnlock(()=>renderList())">🔒</button>`
+            : `<button class="btn btn-ghost btn-icon btn-sm" title="编辑" onclick="requireUnlock(()=>openEditor('${r.id}'))">✏️</button>
+               <button class="btn btn-danger btn-icon btn-sm" title="删除" onclick="requireUnlock(()=>deleteRule('${r.id}'))">🗑</button>`
+          }
+        </div>
+      </div>
+    </div>`;
+  }).join('');
+}
+
+function condPreview(cond) {
+  const t = cond.type;
+  if (t === 'always')       return '始终触发';
+  if (t === 'metric')       return `${cond.metric} ${OP_LABEL[cond.operator]||cond.operator} ${cond.value}`;
+  if (t === 'file_present') return `存在 ${cond.filename}`;
+  if (t === 'file_absent')  return `缺少 ${cond.filename}`;
+  return '';
+}
+
+function escHtml(s) {
+  return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+
+// ── 开关 / 删除 ──────────────────────────────────────────────────────────────
+function toggleRule(id, val) {
+  const r = rules.find(r => r.id === id);
+  if (r) r.enabled = val;
+  renderList();
+}
+
+function deleteRule(id) {
+  if (!confirm('确认删除此规则？')) return;
+  rules = rules.filter(r => r.id !== id);
+  if (editingId === id) closeEditor();
+  else renderList();
+}
+
+// ── 拖拽排序 ─────────────────────────────────────────────────────────────────
+function onDragStart(e, i) { dragSrcIdx = i; e.dataTransfer.effectAllowed = 'move'; }
+function onDragOver(e, i)  {
+  e.preventDefault();
+  document.querySelectorAll('.rule-card').forEach((c,j) =>
+    c.classList.toggle('drag-over', j === i && i !== dragSrcIdx));
+}
+function onDragLeave(e) { e.currentTarget.classList.remove('drag-over'); }
+function onDrop(e, i) {
+  e.preventDefault();
+  document.querySelectorAll('.rule-card').forEach(c => c.classList.remove('drag-over'));
+  if (dragSrcIdx === null || dragSrcIdx === i) return;
+  const moved = rules.splice(dragSrcIdx, 1)[0];
+  rules.splice(i, 0, moved);
+  dragSrcIdx = null;
+  renderList();
+}
+
+// ── 编辑面板 ─────────────────────────────────────────────────────────────────
+function openEditor(id) {
+  editingId = id;
+  const rule = id ? rules.find(r => r.id === id) : null;
+  document.getElementById('ep-title').textContent = rule ? '编辑规则' : '新增规则';
+  document.getElementById('ep-body').innerHTML = buildForm(rule);
+  document.getElementById('editor-panel').classList.add('open');
+  document.getElementById('list-panel').classList.add('with-editor');
+  renderList();
+  updateCondFields();   // 初始化条件字段显示
+}
+
+function closeEditor() {
+  editingId = null;
+  document.getElementById('editor-panel').classList.remove('open');
+  document.getElementById('list-panel').classList.remove('with-editor');
+  renderList();
+}
+
+function buildForm(rule) {
+  const r = rule || {
+    severity: 'medium', category: '', title: '',
+    description: '', suggestions: [],
+    condition: { type: 'metric', metric: 'avg_backend_bound', operator: '>', value: 40 }
+  };
+  const cond = r.condition || {};
+
+  const metricOpts = METRICS.map(m =>
+    `<option value="${m.key}" ${cond.metric===m.key?'selected':''}>${m.label}</option>`).join('');
+
+  const fileOpts = (cond.type==='file_present'||cond.type==='file_absent')
+    ? LOG_FILES.map(f => `<option value="${f}" ${cond.filename===f?'selected':''}>${f}</option>`).join('')
+    : LOG_FILES.map(f => `<option value="${f}">${f}</option>`).join('');
+
+  const suggItems = (r.suggestions||[]).map((s,i) => suggRow(s, i)).join('');
+
+  return `
+  <div class="section-title">触发条件</div>
+  <div class="cond-tabs">
+    <button class="cond-tab ${cond.type==='metric'?'active':''}" onclick="setCond('metric',this)">指标阈值</button>
+    <button class="cond-tab ${cond.type==='file_present'?'active':''}" onclick="setCond('file_present',this)">文件存在</button>
+    <button class="cond-tab ${cond.type==='file_absent'?'active':''}" onclick="setCond('file_absent',this)">文件缺失</button>
+    <button class="cond-tab ${cond.type==='always'?'active':''}" onclick="setCond('always',this)">始终触发</button>
+  </div>
+  <div class="cond-block">
+    <div id="cond-metric" style="display:none">
+      <div class="field-row">
+        <div class="field" style="flex:2">
+          <label>指标</label>
+          <select id="f-metric">${metricOpts}</select>
+        </div>
+        <div class="field" style="flex:1">
+          <label>运算符</label>
+          <select id="f-op">
+            ${['>','<','>=','<=','=='].map(o=>`<option value="${o}" ${cond.operator===o?'selected':''}>${OP_LABEL[o]}</option>`).join('')}
+          </select>
+        </div>
+        <div class="field" style="flex:1">
+          <label>阈值</label>
+          <input type="number" id="f-val" step="any" value="${cond.value??40}">
+        </div>
+      </div>
+      <div id="metric-hint" style="font-size:11px;color:var(--muted);margin-top:-8px;margin-bottom:8px"></div>
+    </div>
+    <div id="cond-file" style="display:none">
+      <div class="field">
+        <label>文件名</label>
+        <select id="f-filename">${fileOpts}</select>
+      </div>
+      <div class="field">
+        <label>或手动输入</label>
+        <input type="text" id="f-filename-custom" placeholder="自定义文件名（如 custom.log）"
+               value="${(cond.type==='file_present'||cond.type==='file_absent') && !LOG_FILES.includes(cond.filename) ? cond.filename : ''}">
+      </div>
+    </div>
+    <div id="cond-always" style="display:none">
+      <div style="color:var(--muted);font-size:12px;padding:4px 0">每次分析都会触发此建议，无论指标数值如何。</div>
+    </div>
+  </div>
+
+  <div class="section-title">输出配置</div>
+  <div class="field">
+    <label>严重度</label>
+    <div class="sev-radios">
+      ${['high','medium','low'].map(s => `
+      <div class="sev-radio ${s}">
+        <input type="radio" name="sev" id="sev-${s}" value="${s}" ${r.severity===s?'checked':''}>
+        <label for="sev-${s}">${SEV_LABEL[s]}</label>
+      </div>`).join('')}
+    </div>
+  </div>
+  <div class="field-row">
+    <div class="field">
+      <label>分类标签</label>
+      <input type="text" id="f-category" value="${escHtml(r.category||'')}" placeholder="如：缓存效率">
+    </div>
+  </div>
+  <div class="field">
+    <label>建议标题 <span style="color:var(--accent2);font-weight:400">{value} 会替换为实际指标值</span></label>
+    <input type="text" id="f-title" value="${escHtml(r.title||'')}" placeholder="如：Backend Bound 偏高 ({value}%)">
+  </div>
+  <div class="field">
+    <label>问题描述</label>
+    <textarea id="f-desc" placeholder="解释为何该指标表示有问题…">${escHtml(r.description||'')}</textarea>
+  </div>
+
+  <div class="section-title">优化建议</div>
+  <div class="sugg-list" id="sugg-list">${suggItems}</div>
+  <button class="add-sugg-btn" onclick="addSugg()">＋ 添加一条建议</button>
+  `;
+}
+
+function suggRow(text, idx) {
+  return `<div class="sugg-item" id="sugg-${idx}">
+    <textarea rows="2" oninput="this.style.height='auto';this.style.height=this.scrollHeight+'px'"
+    >${escHtml(text)}</textarea>
+    <button class="btn btn-danger btn-icon btn-sm" onclick="removeSugg(${idx})">✕</button>
+  </div>`;
+}
+
+function addSugg() {
+  const list = document.getElementById('sugg-list');
+  const idx = list.children.length;
+  const div = document.createElement('div');
+  div.innerHTML = suggRow('', idx);
+  list.appendChild(div.firstElementChild);
+}
+
+function removeSugg(idx) {
+  const el = document.getElementById(`sugg-${idx}`);
+  if (el) el.remove();
+}
+
+// ── 条件类型切换 ──────────────────────────────────────────────────────────────
+let currentCondType = 'metric';
+
+function setCond(type, btn) {
+  currentCondType = type;
+  document.querySelectorAll('.cond-tab').forEach(b => b.classList.remove('active'));
+  btn.classList.add('active');
+  updateCondFields();
+}
+
+function updateCondFields() {
+  const panel = document.getElementById('ep-body');
+  if (!panel) return;
+  const mEl = document.getElementById('cond-metric');
+  const fEl = document.getElementById('cond-file');
+  const aEl = document.getElementById('cond-always');
+  if (mEl) mEl.style.display = currentCondType === 'metric' ? '' : 'none';
+  if (fEl) fEl.style.display = (currentCondType === 'file_present' || currentCondType === 'file_absent') ? '' : 'none';
+  if (aEl) aEl.style.display = currentCondType === 'always' ? '' : 'none';
+  updateMetricHint();
+}
+
+function updateMetricHint() {
+  const sel = document.getElementById('f-metric');
+  const hint = document.getElementById('metric-hint');
+  if (!sel || !hint) return;
+  const m = METRICS.find(m => m.key === sel.value);
+  hint.textContent = m?.hint || '';
+}
+
+// 监听指标选择变化
+document.addEventListener('change', e => {
+  if (e.target.id === 'f-metric') updateMetricHint();
+});
+
+// ── 保存编辑 ─────────────────────────────────────────────────────────────────
+function applyEdit() {
+  // 读取条件
+  let cond = { type: currentCondType };
+  if (currentCondType === 'metric') {
+    const custom = document.getElementById('f-filename-custom')?.value;
+    cond.metric   = document.getElementById('f-metric')?.value || 'avg_backend_bound';
+    cond.operator = document.getElementById('f-op')?.value || '>';
+    cond.value    = parseFloat(document.getElementById('f-val')?.value) || 0;
+  } else if (currentCondType === 'file_present' || currentCondType === 'file_absent') {
+    const custom = document.getElementById('f-filename-custom')?.value?.trim();
+    cond.filename = custom || document.getElementById('f-filename')?.value || '';
+  }
+
+  // 读取建议
+  const suggEls = document.querySelectorAll('#sugg-list .sugg-item textarea');
+  const suggestions = [...suggEls].map(t => t.value.trim()).filter(Boolean);
+
+  const severity = document.querySelector('input[name="sev"]:checked')?.value || 'medium';
+
+  const newRule = {
+    id:          editingId || `rule_${Date.now()}`,
+    enabled:     editingId ? (rules.find(r=>r.id===editingId)?.enabled ?? true) : true,
+    severity,
+    category:    document.getElementById('f-category')?.value?.trim() || '',
+    condition:   cond,
+    title:       document.getElementById('f-title')?.value?.trim() || '',
+    description: document.getElementById('f-desc')?.value?.trim() || '',
+    suggestions,
+  };
+
+  if (editingId) {
+    const idx = rules.findIndex(r => r.id === editingId);
+    if (idx >= 0) rules[idx] = newRule;
+  } else {
+    rules.push(newRule);
+  }
+
+  closeEditor();
+}
+
+// ── 保存到服务器 ─────────────────────────────────────────────────────────────
+function saveAll() {
+  requireUnlock(() => doSaveAll());
+}
+
+function doSaveAll() {
+  const btn = document.getElementById('save-btn');
+  btn.disabled = true;
+  btn.textContent = '保存中…';
+  const pwd = sessionPasswords[currentSetName] || '';
+  fetch(`/api/rules?name=${encodeURIComponent(currentSetName)}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ rules, password: pwd })
+  })
+    .then(r => {
+      if (!r.ok) return r.json().then(d => { throw new Error(d.detail || '保存失败'); });
+      return r.json();
+    })
+    .then(() => {
+      btn.disabled = false;
+      btn.textContent = '保存';
+      showToast(`「${currentSetName}」已保存 ${rules.length} 条规则`);
+    })
+    .catch(e => {
+      btn.disabled = false;
+      btn.textContent = '保存';
+      showToast(e.message);
+    });
+}
+
+function showToast(msg) {
+  const t = document.getElementById('save-toast');
+  t.textContent = msg;
+  t.classList.add('show');
+  setTimeout(() => t.classList.remove('show'), 2200);
+}
+
+// ── 恢复默认 ─────────────────────────────────────────────────────────────────
+function resetToDefaults() {
+  if (!confirm('将覆盖所有自定义规则，恢复为内置默认规则？')) return;
+  fetch('/api/rules/reset', { method: 'POST' })
+    .then(r => r.json())
+    .then(() => fetch('/api/rules').then(r => r.json()))
+    .then(data => {
+      rules = data;
+      closeEditor();
+      showToast('已恢复默认规则');
+    });
+}
+
+// ── 导入 / 导出 ───────────────────────────────────────────────────────────────
+function exportRules() {
+  const blob = new Blob([JSON.stringify(rules, null, 2)], { type: 'application/json' });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = 'perf-rules.json';
+  a.click();
+}
+
+function importRules() {
+  const input = document.createElement('input');
+  input.type = 'file';
+  input.accept = '.json';
+  input.onchange = e => {
+    const file = e.target.files[0];
+    if (!file) return;
+    const setName = file.name.replace(/\.json$/i, '');
+    const reader = new FileReader();
+    reader.onload = ev => {
+      try {
+        const imported = JSON.parse(ev.target.result);
+        // 支持旧格式（纯数组）和新格式（{rules, password}）
+        const importedRules = Array.isArray(imported) ? imported : (imported.rules || []);
+        if (!Array.isArray(importedRules)) throw new Error('格式错误');
+        // 保存到服务器（新导入的规则集无密码，之后可通过现有密码保护机制管理）
+        fetch(`/api/rules?name=${encodeURIComponent(setName)}`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ rules: importedRules, password: '' })
+        }).then(r => {
+          if (!r.ok) return r.json().then(d => { throw new Error(d.detail); });
+          currentSetName = setName;
+          rules = importedRules;
+          loadRulesets();
+          renderList();
+          showToast(`已导入规则集「${setName}」，共 ${rules.length} 条规则`);
+        }).catch(e => alert('导入失败：' + e.message));
+      } catch (err) {
+        alert('导入失败：' + err.message);
+      }
+    };
+    reader.readAsText(file);
+  };
+  input.click();
+}
+</script>
+</body>
+</html>

@@ -1,0 +1,199 @@
+{
+  "password": "hcollector2026",
+  "rules": [
+    {
+      "id": "rule_001",
+      "enabled": true,
+      "severity": "high",
+      "category": "内存/计算瓶颈",
+      "condition": {
+        "type": "metric",
+        "metric": "avg_backend_bound",
+        "operator": ">",
+        "value": 40
+      },
+      "title": "Backend Bound 偏高 ({value}%)",
+      "description": "CPU 大量时间在等待内存或计算单元，是主要性能瓶颈。",
+      "suggestions": [
+        "优化数据访问局部性，提高缓存复用率",
+        "减少跨 NUMA 节点内存访问",
+        "考虑对关键数组进行 SoA (Structure of Arrays) 重排",
+        "检查是否存在假共享 (False Sharing) 问题"
+      ]
+    },
+    {
+      "id": "rule_002",
+      "enabled": true,
+      "severity": "medium",
+      "category": "指令获取瓶颈",
+      "condition": {
+        "type": "metric",
+        "metric": "avg_frontend_bound",
+        "operator": ">",
+        "value": 20
+      },
+      "title": "Frontend Bound 较高 ({value}%)",
+      "description": "指令获取/解码成为瓶颈，可能是 I-Cache 压力大或分支预测失效。",
+      "suggestions": [
+        "减少函数调用层次，提高代码局部性",
+        "使用 PGO (Profile-Guided Optimization) 优化热路径",
+        "考虑内联关键小函数"
+      ]
+    },
+    {
+      "id": "rule_003",
+      "enabled": true,
+      "severity": "medium",
+      "category": "缓存效率",
+      "condition": {
+        "type": "metric",
+        "metric": "avg_l3_miss",
+        "operator": ">",
+        "value": 50
+      },
+      "title": "L3 缓存缺失率异常 ({value}%)",
+      "description": "L3 缓存压力极大，大量内存访问直接穿透到 DRAM，延迟显著增加。",
+      "suggestions": [
+        "分析工作集大小，确认是否超出 L3 容量",
+        "使用 Cache Blocking / Tiling 技术分块计算",
+        "减少不规则内存访问模式（如散列/图遍历）",
+        "考虑对热点数据使用大页 (Huge Pages) 减少 TLB 压力"
+      ]
+    },
+    {
+      "id": "rule_004",
+      "enabled": true,
+      "severity": "medium",
+      "category": "预取效率",
+      "condition": {
+        "type": "metric",
+        "metric": "avg_l2_pf_miss",
+        "operator": ">",
+        "value": 60
+      },
+      "title": "L2 预取命中率低 (缺失率 {value}%)",
+      "description": "硬件预取器难以预测访问模式，预取效果差。",
+      "suggestions": [
+        "改善数据访问的规律性（顺序访问优于随机访问）",
+        "考虑在关键循环中使用软件预取指令 (__builtin_prefetch)",
+        "重新组织数据结构，使热点字段连续存储"
+      ]
+    },
+    {
+      "id": "rule_005",
+      "enabled": true,
+      "severity": "medium",
+      "category": "指令并行度",
+      "condition": {
+        "type": "metric",
+        "metric": "avg_ipc",
+        "operator": "<",
+        "value": 1.0
+      },
+      "title": "IPC 偏低 ({value})",
+      "description": "每时钟周期执行指令数偏低，存在流水线停顿或指令依赖问题。",
+      "suggestions": [
+        "检查长依赖链，考虑循环展开减少依赖",
+        "利用 SIMD 指令提升指令级并行",
+        "确保使用高优化级别编译 (-O3 -march=native)"
+      ]
+    },
+    {
+      "id": "rule_006",
+      "enabled": true,
+      "severity": "high",
+      "category": "NUMA 亲和性",
+      "condition": {
+        "type": "metric",
+        "metric": "avg_rma_ratio",
+        "operator": ">",
+        "value": 0.15
+      },
+      "title": "远程内存访问比率偏高 ({value})",
+      "description": "进程频繁访问远端 NUMA 节点内存，跨 Die 访问延迟高于本地访问 2-4 倍。",
+      "suggestions": [
+        "使用 numactl --membind 限制内存分配在本地 NUMA 节点",
+        "检查 MPI rank 与内存初始化的亲和性（First-Touch 策略）",
+        "配合 numactl --cpunodebind 绑定计算到对应 NUMA 节点",
+        "考虑使用 libnuma 进行显式 NUMA-aware 内存分配"
+      ]
+    },
+    {
+      "id": "rule_007",
+      "enabled": true,
+      "severity": "medium",
+      "category": "进程绑定",
+      "condition": {
+        "type": "metric",
+        "metric": "total_die_mig",
+        "operator": ">",
+        "value": 0
+      },
+      "title": "检测到 Die 间迁移 ({value} 次)",
+      "description": "进程/线程发生了跨 Die 迁移，导致缓存热数据失效和 NUMA 本地性破坏。",
+      "suggestions": [
+        "使用 taskset 或 numactl 将 MPI rank 绑定到指定 CPU",
+        "在 MPI 启动参数中配置进程绑定策略（如 -bind-to core）",
+        "避免在运行时动态调整调度策略"
+      ]
+    },
+    {
+      "id": "rule_008",
+      "enabled": true,
+      "severity": "low",
+      "category": "向量化优化",
+      "condition": {
+        "type": "metric",
+        "metric": "avg_sse_ratio",
+        "operator": ">",
+        "value": 30
+      },
+      "title": "仅使用 SSE 指令 (SSE 占比 {value}%)",
+      "description": "当前使用 SSE（128-bit SIMD），未充分利用 AVX2（256-bit）或 AVX-512（512-bit）。",
+      "suggestions": [
+        "使用 -march=native 或 -mavx2 重新编译以启用 AVX2",
+        "若平台支持 AVX-512，使用 -mavx512f 进一步提升向量宽度",
+        "检查代码中是否存在阻止向量化的依赖或条件分支",
+        "使用编译器向量化报告（-fopt-info-vec）定位未向量化循环"
+      ]
+    },
+    {
+      "id": "rule_009",
+      "enabled": true,
+      "severity": "low",
+      "category": "分支预测",
+      "condition": {
+        "type": "metric",
+        "metric": "avg_branch_miss",
+        "operator": ">",
+        "value": 3
+      },
+      "title": "分支预测失败率偏高 ({value}%)",
+      "description": "分支预测失败导致流水线冲刷，增加执行延迟。",
+      "suggestions": [
+        "减少热路径中的条件分支，考虑将条件移出循环",
+        "使用 __builtin_expect 提示编译器分支预测概率",
+        "考虑将小的 if-else 替换为无分支的算术运算"
+      ]
+    },
+    {
+      "id": "rule_010",
+      "enabled": true,
+      "severity": "low",
+      "category": "CPU 频率",
+      "condition": {
+        "type": "metric",
+        "metric": "avg_bzy_mhz",
+        "operator": "<",
+        "value": 1500
+      },
+      "title": "CPU 运行频率偏低 ({value} MHz)",
+      "description": "CPU 实际运行频率低于基础频率，可能处于节能模式或存在热降频。",
+      "suggestions": [
+        "检查电源管理策略，改用 performance governor",
+        "确认系统未开启激进的节能模式（BIOS/OS 层面）",
+        "检查机器温度，排除热降频（thermal throttling）"
+      ]
+    }
+  ]
+}
